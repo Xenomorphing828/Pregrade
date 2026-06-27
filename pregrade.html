@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#101319" />
+<title>Reticle — card pre-grade</title>
+<style>
+  /* ----- tokens -------------------------------------------------------- */
+  :root{
+    --bg:#101319;          /* graphite, slightly blue */
+    --panel:#171b22;
+    --panel-2:#1d222b;
+    --line:#2a313c;
+    --ink:#eef1f6;
+    --muted:#8b94a3;
+    --faint:#5c6573;
+    --amber:#e8a33d;       /* measurement / active (light-meter amber) */
+    --mint:#54d6a8;        /* lock good / pass */
+    --coral:#ff6b5e;       /* reject / defect */
+    --reticle:rgba(180,210,255,.55);
+    --mono:ui-monospace,"SF Mono",Menlo,Monaco,"Cascadia Code",monospace;
+    --ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg);color:var(--ink);font-family:var(--ui);
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden;position:fixed;inset:0;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  #app{height:100%;display:flex;flex-direction:column}
+
+  /* ----- header / stepper --------------------------------------------- */
+  header{flex:0 0 auto;padding:14px 16px 10px;border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:baseline;gap:8px}
+  .brand b{font-weight:600;letter-spacing:-.02em;font-size:16px}
+  .brand .dot{width:6px;height:6px;border-radius:50%;background:var(--amber);
+    box-shadow:0 0 8px var(--amber);align-self:center}
+  .brand small{font-family:var(--mono);font-size:10px;color:var(--faint);
+    letter-spacing:.14em;text-transform:uppercase;margin-left:auto}
+  .scale{display:flex;gap:4px;margin-top:11px}
+  .tick{flex:1;height:3px;border-radius:2px;background:var(--line);position:relative;transition:background .25s}
+  .tick.done{background:var(--mint)}
+  .tick.active{background:var(--amber)}
+  .scale-labels{display:flex;gap:4px;margin-top:6px}
+  .scale-labels span{flex:1;font-family:var(--mono);font-size:8.5px;color:var(--faint);
+    letter-spacing:.06em;text-align:center;text-transform:uppercase;white-space:nowrap;overflow:hidden}
+  .scale-labels span.active{color:var(--amber)}
+  .scale-labels span.done{color:var(--mint)}
+
+  /* ----- main stage ---------------------------------------------------- */
+  main{flex:1 1 auto;position:relative;overflow:hidden;display:flex}
+  .screen{position:absolute;inset:0;display:none;flex-direction:column}
+  .screen.on{display:flex}
+
+  /* viewfinder */
+  .viewport{position:relative;flex:1 1 auto;background:#000;overflow:hidden}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+  canvas.overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+
+  /* live readout chips */
+  .readout{position:absolute;top:12px;left:12px;right:12px;display:flex;gap:7px;flex-wrap:wrap;z-index:3}
+  .chip{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--muted);
+    background:rgba(16,19,25,.66);backdrop-filter:blur(8px);
+    border:1px solid var(--line);border-radius:7px;padding:5px 8px;display:flex;align-items:center;gap:6px}
+  .chip b{color:var(--ink);font-weight:500}
+  .led{width:7px;height:7px;border-radius:50%;background:var(--faint);transition:background .15s,box-shadow .15s}
+  .led.ok{background:var(--mint);box-shadow:0 0 7px var(--mint)}
+  .led.warn{background:var(--amber);box-shadow:0 0 7px var(--amber)}
+  .led.bad{background:var(--coral);box-shadow:0 0 7px var(--coral)}
+
+  /* lock banner */
+  .lockbar{position:absolute;left:12px;right:12px;bottom:12px;z-index:3;
+    font-family:var(--mono);font-size:11px;letter-spacing:.04em;
+    background:rgba(16,19,25,.72);backdrop-filter:blur(8px);
+    border:1px solid var(--line);border-radius:9px;padding:9px 12px;
+    display:flex;align-items:center;gap:9px;transition:border-color .2s}
+  .lockbar.lock{border-color:var(--mint);color:var(--mint)}
+  .lockbar .count{margin-left:auto;color:var(--ink);font-weight:600}
+
+  /* corner guide */
+  .cornerguide{position:absolute;inset:0;z-index:2;pointer-events:none}
+
+  /* controls under viewport */
+  .controls{flex:0 0 auto;padding:16px;display:flex;align-items:center;gap:14px;
+    border-top:1px solid var(--line);background:var(--bg)}
+  .hint{font-family:var(--mono);font-size:10.5px;color:var(--muted);line-height:1.45;flex:1;letter-spacing:.02em}
+  .hint b{color:var(--ink);font-weight:600}
+  .shutter{flex:0 0 auto;width:62px;height:62px;border-radius:50%;border:3px solid var(--ink);
+    background:transparent;position:relative;cursor:pointer;transition:transform .1s}
+  .shutter:active{transform:scale(.94)}
+  .shutter::after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--ink)}
+  .shutter:disabled{border-color:var(--faint);opacity:.5}
+  .shutter:disabled::after{background:var(--faint)}
+  .ghostbtn{flex:0 0 auto;background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
+    font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+    padding:11px 13px;border-radius:9px;cursor:pointer}
+  .ghostbtn:active{background:var(--panel)}
+
+  /* ----- intro / scroll panels ---------------------------------------- */
+  .pad{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:22px 18px 30px}
+  .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--amber)}
+  h1{font-size:30px;line-height:1.05;letter-spacing:-.03em;font-weight:650;margin:10px 0 0}
+  h1 .thin{font-weight:300;color:var(--muted)}
+  .lede{color:var(--muted);font-size:14.5px;line-height:1.5;margin:14px 0 0;max-width:34em}
+  .flowlist{list-style:none;padding:0;margin:24px 0 0;border-top:1px solid var(--line)}
+  .flowlist li{display:flex;gap:14px;padding:15px 2px;border-bottom:1px solid var(--line);align-items:flex-start}
+  .flowlist .n{font-family:var(--mono);font-size:11px;color:var(--amber);padding-top:2px;min-width:22px}
+  .flowlist .t b{font-weight:600;font-size:14px}
+  .flowlist .t p{margin:3px 0 0;color:var(--muted);font-size:12.5px;line-height:1.45}
+  .note{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--amber);
+    border-radius:10px;padding:13px 15px;font-size:12.5px;color:var(--muted);line-height:1.5}
+  .note b{color:var(--ink)}
+  .cta{margin-top:26px;width:100%;background:var(--amber);color:#1a1205;border:none;
+    font-family:var(--ui);font-weight:650;font-size:16px;letter-spacing:-.01em;
+    padding:16px;border-radius:12px;cursor:pointer}
+  .cta:active{filter:brightness(.94)}
+  .cta.alt{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);font-weight:550;margin-top:11px}
+
+  /* ----- review (after a capture) ------------------------------------- */
+  .review{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:18px}
+  .shotwrap{position:relative;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#000}
+  .shotwrap canvas{display:block;width:100%;height:auto}
+  .verdict{display:flex;align-items:baseline;gap:10px;margin:18px 0 2px}
+  .verdict .grade{font-family:var(--mono);font-size:40px;font-weight:600;letter-spacing:-.02em;line-height:1}
+  .verdict .label{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .conf{font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:auto;letter-spacing:.04em}
+  .metrics{margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .metric{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .metric .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .metric .v{font-family:var(--mono);font-size:20px;margin-top:5px;letter-spacing:-.01em}
+  .metric .v.good{color:var(--mint)}.metric .v.mid{color:var(--amber)}.metric .v.bad{color:var(--coral)}
+  .metric .sub{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:3px}
+  .barwrap{margin-top:18px}
+  .barrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px}
+  .barrow .pk{width:74px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-size:9.5px}
+  .track{flex:1;height:6px;border-radius:3px;background:var(--panel-2);position:relative;overflow:hidden}
+  .track i{position:absolute;inset:0 auto 0 0;border-radius:3px;background:var(--amber)}
+  .barrow .pv{width:54px;text-align:right;color:var(--ink)}
+  .pending{color:var(--faint)!important}
+
+  /* ----- ROI ----------------------------------------------------------- */
+  .roi{margin-top:20px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .roi h3{margin:0 0 4px;font-size:14px;letter-spacing:-.01em}
+  .roi p.s{margin:0 0 14px;font-size:11.5px;color:var(--muted);line-height:1.45}
+  .field{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)}
+  .field label{flex:1;font-size:12.5px;color:var(--muted)}
+  .field input,.field select{font-family:var(--mono);font-size:14px;background:var(--panel-2);
+    color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 10px;width:118px;text-align:right}
+  .field select{text-align:left;width:148px}
+  .field input:focus,.field select:focus{outline:2px solid var(--amber);outline-offset:1px}
+  .roi-out{margin-top:14px;padding-top:14px;border-top:1px solid var(--line);
+    display:flex;align-items:center;gap:12px}
+  .roi-out .net{font-family:var(--mono);font-size:26px;font-weight:600}
+  .roi-out .tag{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    padding:6px 10px;border-radius:8px;margin-left:auto;border:1px solid currentColor}
+  .pos{color:var(--mint)}.neg{color:var(--coral)}.warn{color:var(--amber)}
+
+  .actions{display:flex;gap:11px;margin-top:22px}
+  .actions button{flex:1;padding:14px;border-radius:11px;font-family:var(--ui);font-weight:600;font-size:14.5px;cursor:pointer;border:1px solid var(--line)}
+  .actions .primary{background:var(--amber);color:#1a1205;border:none}
+  .actions .secondary{background:var(--panel-2);color:var(--ink)}
+
+  /* fallback / error */
+  .fallback{position:absolute;inset:0;z-index:5;background:var(--bg);display:none;
+    flex-direction:column;justify-content:center;padding:26px;text-align:center}
+  .fallback.on{display:flex}
+  .fallback h2{font-size:18px;margin:0 0 8px}
+  .fallback p{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 18px}
+  .fileinput{display:inline-block;background:var(--amber);color:#1a1205;font-weight:650;
+    padding:13px 18px;border-radius:11px;font-size:15px;cursor:pointer}
+  .fileinput input{display:none}
+
+  .saved{margin-top:24px;border-top:1px solid var(--line);padding-top:14px}
+  .saved h4{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+  .savedrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px}
+  .savedrow .sg{color:var(--amber);width:46px}
+  .savedrow .sv{color:var(--muted);margin-left:auto}
+  .empty{color:var(--faint);font-size:12px;font-family:var(--mono)}
+
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  .pulse{animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand"><span class="dot"></span><b>Reticle</b><small id="stepcode">PRE-GRADE · CGC</small></div>
+    <div class="scale" id="scale"></div>
+    <div class="scale-labels" id="scaleLabels"></div>
+  </header>
+
+  <main>
+    <!-- INTRO -->
+    <section class="screen on" id="s-intro">
+      <div class="pad">
+        <div class="eyebrow">Card pre-grade · forensic capture</div>
+        <h1>Measure first.<br><span class="thin">Submit only the winners.</span></h1>
+        <p class="lede">A capture instrument for your phone. It straightens the card, measures centering to the millimetre, and inspects every corner — so an $18–$100 CGC fee only ever rides on a card that earns it.</p>
+        <ul class="flowlist">
+          <li><span class="n">01</span><span class="t"><b>Front — straightened</b><p>Live edge-lock finds the card and auto-fires when it's square, still and sharp. The shot is warped flat before anything is measured.</p></span></li>
+          <li><span class="n">02</span><span class="t"><b>Back — centering</b><p>Optional, but CGC reads back-centering too. Same locked capture.</p></span></li>
+          <li><span class="n">03</span><span class="t"><b>Four corners — required</b><p>A macro on each corner. No warp here — raw pixels, focus-gated — to read whitening and tip wear honestly.</p></span></li>
+          <li><span class="n">04</span><span class="t"><b>Verdict + ROI</b><p>A predicted CGC ceiling, per-pillar confidence, and the submit / keep-raw math at current fees.</p></span></li>
+        </ul>
+        <div class="note"><b>Before you start:</b> shoot the card <b>out of its sleeve</b> on a plain surface that contrasts with the border — a light desk for dark/black-bordered cards. Glare and low contrast are what break edge-lock.</div>
+        <div class="note" style="border-left-color:var(--coral)"><b>Camera needs a secure page.</b> Live capture works when this file is opened over <b>https</b> (host it free on Netlify, Vercel or GitHub Pages). Opened any other way, the camera may be blocked — the app falls back to tap-to-shoot, which still measures everything.</div>
+        <button class="cta" id="startBtn">Start capture</button>
+      </div>
+    </section>
+
+    <!-- CAPTURE (reused for every step) -->
+    <section class="screen" id="s-capture">
+      <div class="viewport" id="viewport">
+        <video id="video" playsinline muted autoplay></video>
+        <canvas class="overlay" id="overlay"></canvas>
+        <div class="readout">
+          <div class="chip"><span class="led" id="ledEdge"></span><span id="txtEdge">edge</span></div>
+          <div class="chip"><span class="led" id="ledLevel"></span><span id="txtLevel">level</span></div>
+          <div class="chip"><span class="led" id="ledFocus"></span><span id="txtFocus">focus</span></div>
+          <div class="chip"><span class="led" id="ledFill"></span><span id="txtFill">fill</span></div>
+        </div>
+        <div class="lockbar" id="lockbar"><span id="lockText">Searching for card…</span><span class="count" id="lockCount"></span></div>
+        <div class="fallback" id="fallback">
+          <h2>Camera unavailable</h2>
+          <p id="fallbackMsg">This page isn't allowed to open the camera here. Take the photo with your camera roll instead — measurement still runs on the still.</p>
+          <label class="fileinput">Take / choose photo<input type="file" accept="image/*" capture="environment" id="fileIn"></label>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="hint" id="captureHint"></div>
+        <button class="ghostbtn" id="skipBtn" style="display:none">Skip</button>
+        <button class="shutter" id="shutter" aria-label="Capture"></button>
+      </div>
+    </section>
+
+    <!-- REVIEW a full-card shot -->
+    <section class="screen" id="s-review">
+      <div class="review" id="reviewBody"></div>
+    </section>
+
+    <!-- RESULTS -->
+    <section class="screen" id="s-results">
+      <div class="review" id="resultsBody"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   Reticle — single-file pre-grade capture instrument
+   Pure vanilla JS. No external libraries, no storage APIs.
+   Measurement here is a v1 heuristic vision pass, not a calibrated grade.
+   ===================================================================== */
+
+const CARD_W_MM = 63, CARD_H_MM = 88;          // standard TCG card
+const AR = CARD_H_MM / CARD_W_MM;              // height/width
+
+const STEPS = [
+  {id:"front",  kind:"card",   label:"Front",  short:"FRONT",  optional:false},
+  {id:"back",   kind:"card",   label:"Back",   short:"BACK",   optional:true},
+  {id:"tl",     kind:"corner", label:"Top-left corner",     short:"TL", corner:"tl"},
+  {id:"tr",     kind:"corner", label:"Top-right corner",    short:"TR", corner:"tr"},
+  {id:"bl",     kind:"corner", label:"Bottom-left corner",  short:"BL", corner:"bl"},
+  {id:"br",     kind:"corner", label:"Bottom-right corner", short:"BR", corner:"br"},
+];
+
+const state = {
+  stepIndex:-1,
+  captures:{},        // id -> {canvas, measurement}
+  collection:[],      // saved cards this session
+  stream:null,
+  running:false,
+  lockFrames:0,
+  lastQuad:null,
+};
+
+const $ = s => document.querySelector(s);
+const els = {
+  video:$("#video"), overlay:$("#overlay"), viewport:$("#viewport"),
+  lockbar:$("#lockbar"), lockText:$("#lockText"), lockCount:$("#lockCount"),
+  shutter:$("#shutter"), skip:$("#skipBtn"), hint:$("#captureHint"),
+  fallback:$("#fallback"), fallbackMsg:$("#fallbackMsg"), fileIn:$("#fileIn"),
+  scale:$("#scale"), scaleLabels:$("#scaleLabels"), stepcode:$("#stepcode"),
+};
+
+/* ---------- step rail ------------------------------------------------- */
+function buildRail(){
+  els.scale.innerHTML=""; els.scaleLabels.innerHTML="";
+  STEPS.forEach(()=>{ const t=document.createElement("div"); t.className="tick"; els.scale.appendChild(t); });
+  STEPS.forEach(s=>{ const l=document.createElement("span"); l.textContent=s.short; els.scaleLabels.appendChild(l); });
+}
+function paintRail(){
+  [...els.scale.children].forEach((t,i)=>{
+    t.className="tick"+(i<state.stepIndex?" done":i===state.stepIndex?" active":"");
+  });
+  [...els.scaleLabels.children].forEach((l,i)=>{
+    l.className=(i<state.stepIndex?"done":i===state.stepIndex?"active":"");
+  });
+}
+
+/* ---------- screen switching ----------------------------------------- */
+function show(id){ document.querySelectorAll(".screen").forEach(s=>s.classList.toggle("on",s.id===id)); }
+
+/* =====================================================================
+   CAMERA
+   ===================================================================== */
+async function startCamera(){
+  try{
+    state.stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ideal:"environment"}, width:{ideal:1920}, height:{ideal:1080} },
+      audio:false
+    });
+    els.video.srcObject = state.stream;
+    await els.video.play();
+    els.fallback.classList.remove("on");
+    return true;
+  }catch(err){
+    els.fallback.classList.add("on");
+    els.fallbackMsg.textContent = (location.protocol!=="https:" && location.hostname!=="localhost")
+      ? "Live camera needs an https page. Host this file (Netlify / Vercel / GitHub Pages) for edge-lock, or take a still below — measurement still runs."
+      : "Couldn't open the camera. Take a still below and the app will measure it.";
+    return false;
+  }
+}
+
+/* =====================================================================
+   IMAGE PRIMITIVES
+   ===================================================================== */
+function makeCanvas(w,h){ const c=document.createElement("canvas"); c.width=w; c.height=h; return c; }
+
+// draw a source (video/canvas/image) into ctx replicating object-fit:cover
+function drawCover(ctx, src, sw, sh, dw, dh){
+  const sAR=sw/sh, dAR=dw/dh; let cx,cy,cw,ch;
+  if(sAR>dAR){ ch=sh; cw=sh*dAR; cx=(sw-cw)/2; cy=0; }
+  else{ cw=sw; ch=sw/dAR; cx=0; cy=(sh-ch)/2; }
+  ctx.drawImage(src,cx,cy,cw,ch,0,0,dw,dh);
+}
+
+/* ---------- card quad detection -------------------------------------- *
+ * Works on a small grayscale buffer. Assumes the card is the dominant
+ * object and the background sits at the frame edges (contrast required).
+ * Returns {quad:[tl,tr,br,bl], coverage, level, focus, contrast} or null.
+ * ------------------------------------------------------------------- */
+function detectCard(data, w, h){
+  // background luminance = median of frame-edge pixels
+  const edge=[];
+  for(let x=0;x<w;x+=2){ edge.push(lum(data,x,0,w)); edge.push(lum(data,x,h-1,w)); }
+  for(let y=0;y<h;y+=2){ edge.push(lum(data,0,y,w)); edge.push(lum(data,w-1,y,w)); }
+  edge.sort((a,b)=>a-b);
+  const bg=edge[edge.length>>1];
+
+  // foreground mask + extreme points
+  let tl={s:1e9},br={s:-1e9},tr={s:-1e9},bl={s:1e9};
+  let count=0, sumL=0;
+  const thr=34; // luminance distance to count as foreground
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const L=lum(data,x,y,w);
+      if(Math.abs(L-bg)>thr){
+        count++;
+        const a=x+y, b=x-y;
+        if(a<tl.s){tl={s:a,x,y};}
+        if(a>br.s){br={s:a,x,y};}
+        if(b>tr.s){tr={s:b,x,y};}
+        if(b<bl.s){bl={s:b,x,y};}
+        sumL+=L;
+      }
+    }
+  }
+  const coverage=count/(w*h);
+  if(coverage<0.12 || coverage>0.97 || count<200) return {quad:null,coverage,contrast:Math.abs((sumL/Math.max(count,1))-bg)/255,level:0,focus:0};
+
+  const quad=[ {x:tl.x,y:tl.y},{x:tr.x,y:tr.y},{x:br.x,y:br.y},{x:bl.x,y:bl.y} ];
+
+  // levelness: opposite sides similar length, corners convex-ish
+  const top=dist(quad[0],quad[1]), bot=dist(quad[3],quad[2]);
+  const lft=dist(quad[0],quad[3]), rgt=dist(quad[1],quad[2]);
+  const symH=1-Math.min(1,Math.abs(top-bot)/Math.max(top,bot,1));
+  const symV=1-Math.min(1,Math.abs(lft-rgt)/Math.max(lft,rgt,1));
+  const level=Math.min(symH,symV);
+
+  // focus: gradient energy sampled inside the quad bbox
+  const focus=focusMetric(data,w,h,quad);
+  const contrast=Math.abs((sumL/count)-bg)/255;
+  return {quad,coverage,level,focus,contrast};
+}
+function lum(d,x,y,w){ const i=(y*w+x)*4; return (d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114); }
+function dist(a,b){ return Math.hypot(a.x-b.x,a.y-b.y); }
+function focusMetric(d,w,h,quad){
+  const xs=quad.map(p=>p.x), ys=quad.map(p=>p.y);
+  const x0=Math.max(1,Math.min(...xs)), x1=Math.min(w-2,Math.max(...xs));
+  const y0=Math.max(1,Math.min(...ys)), y1=Math.min(h-2,Math.max(...ys));
+  let acc=0,n=0;
+  for(let y=y0;y<y1;y+=2){ for(let x=x0;x<x1;x+=2){
+    const gx=lum(d,x+1,y,w)-lum(d,x-1,y,w);
+    const gy=lum(d,x,y+1,w)-lum(d,x,y-1,w);
+    acc+=gx*gx+gy*gy; n++;
+  }}
+  return n? Math.min(1, (acc/n)/900) : 0;  // normalised 0..1
+}
+
+/* ---------- homography (4-pt) + warp --------------------------------- */
+function solve(A,b){ // Gaussian elimination, n x n
+  const n=b.length;
+  for(let i=0;i<n;i++){
+    let p=i; for(let r=i+1;r<n;r++) if(Math.abs(A[r][i])>Math.abs(A[p][i])) p=r;
+    [A[i],A[p]]=[A[p],A[i]]; [b[i],b[p]]=[b[p],b[i]];
+    const piv=A[i][i]||1e-9;
+    for(let r=0;r<n;r++){ if(r===i) continue; const f=A[r][i]/piv;
+      for(let c=i;c<n;c++) A[r][c]-=f*A[i][c]; b[r]-=f*b[i]; }
+  }
+  return b.map((v,i)=>v/(A[i][i]||1e-9));
+}
+function warpToCard(srcCanvas, quad, outW){
+  const outH=Math.round(outW*AR);
+  const rect=[{x:0,y:0},{x:outW,y:0},{x:outW,y:outH},{x:0,y:outH}];
+  // solve H: rect(out) -> quad(src)
+  const A=[], b=[];
+  for(let i=0;i<4;i++){
+    const {x,y}=rect[i], {x:X,y:Y}=quad[i];
+    A.push([x,y,1,0,0,0,-x*X,-y*X]); b.push(X);
+    A.push([0,0,0,x,y,1,-x*Y,-y*Y]); b.push(Y);
+  }
+  const h=solve(A,b); // [a,b,c,d,e,f,g,h]
+  const sctx=srcCanvas.getContext("2d");
+  const sdat=sctx.getImageData(0,0,srcCanvas.width,srcCanvas.height).data;
+  const sw=srcCanvas.width, sh=srcCanvas.height;
+  const out=makeCanvas(outW,outH), octx=out.getContext("2d");
+  const odat=octx.createImageData(outW,outH), o=odat.data;
+  for(let y=0;y<outH;y++){
+    for(let x=0;x<outW;x++){
+      const den=h[6]*x+h[7]*y+1;
+      const X=(h[0]*x+h[1]*y+h[2])/den, Y=(h[3]*x+h[4]*y+h[5])/den;
+      const oi=(y*outW+x)*4;
+      if(X<0||Y<0||X>=sw-1||Y>=sh-1){ o[oi]=0;o[oi+1]=0;o[oi+2]=0;o[oi+3]=255; continue; }
+      // bilinear
+      const x0=X|0,y0=Y|0,fx=X-x0,fy=Y-y0;
+      for(let c=0;c<3;c++){
+        const i00=((y0*sw+x0)*4)+c, i10=i00+4, i01=i00+sw*4, i11=i01+4;
+        o[oi+c]=(sdat[i00]*(1-fx)+sdat[i10]*fx)*(1-fy)+(sdat[i01]*(1-fx)+sdat[i11]*fx)*fy;
+      }
+      o[oi+3]=255;
+    }
+  }
+  octx.putImageData(odat,0,0);
+  return out;
+}
+
+/* ---------- centering measurement on a straightened card ------------- */
+function measureCentering(card){
+  const ctx=card.getContext("2d"), W=card.width, H=card.height;
+  const d=ctx.getImageData(0,0,W,H).data;
+  const px2mmX=CARD_W_MM/W, px2mmY=CARD_H_MM/H;
+
+  // border reference colour: ~3% in from each edge, midpoints
+  const ref=avgColor(d,W,H,[
+    [W*0.03,H*0.5],[W*0.97,H*0.5],[W*0.5,H*0.03],[W*0.5,H*0.97]
+  ]);
+  const inset=(side)=>{ // march inward across several scan lines, find first sustained colour break
+    const vals=[]; const N=9;
+    for(let k=1;k<=N;k++){
+      const t=k/(N+1);
+      let found=null;
+      if(side==="L"){ const y=(H*t)|0; for(let x=2;x<W*0.45;x++){ if(colDist(d,W,x,y,ref)>46 && sustain(d,W,x,y,ref,1)) {found=x;break;} } }
+      if(side==="R"){ const y=(H*t)|0; for(let x=W-3;x>W*0.55;x--){ if(colDist(d,W,x,y,ref)>46 && sustain(d,W,x,y,ref,-1)){found=W-x;break;} } }
+      if(side==="T"){ const x=(W*t)|0; for(let y=2;y<H*0.45;y++){ if(colDist2(d,W,x,y,ref)>46 && sustainV(d,W,x,y,ref,1)){found=y;break;} } }
+      if(side==="B"){ const x=(W*t)|0; for(let y=H-3;y>H*0.55;y--){ if(colDist2(d,W,x,y,ref)>46 && sustainV(d,W,x,y,ref,-1)){found=H-y;break;} } }
+      if(found!=null) vals.push(found);
+    }
+    return vals;
+  };
+  const L=inset("L"),R=inset("R"),T=inset("T"),B=inset("B");
+  const med=a=>{ if(!a.length) return null; const s=[...a].sort((p,q)=>p-q); return s[s.length>>1]; };
+  const spread=a=>{ if(a.length<2) return 1; const m=med(a); const dev=a.map(v=>Math.abs(v-m)); return med(dev)/(m||1); };
+
+  const Lm=med(L),Rm=med(R),Tm=med(T),Bm=med(B);
+  if([Lm,Rm,Tm,Bm].some(v=>v==null)){
+    return {ok:false, confidence:0, note:"Inner border not detected — needs a clear bordered card and clean lighting."};
+  }
+  const hHi=Math.max(Lm,Rm)/(Lm+Rm)*100, hLo=100-hHi;
+  const vHi=Math.max(Tm,Bm)/(Tm+Bm)*100, vLo=100-vHi;
+  const worst=Math.max(hHi,vHi);
+  const conf=Math.max(0,Math.min(1, 1-(spread(L)+spread(R)+spread(T)+spread(B))/4*3));
+
+  return {
+    ok:true,
+    L:Lm,R:Rm,T:Tm,B:Bm,
+    hRatio:`${Math.round(hHi)}/${Math.round(hLo)}`,
+    vRatio:`${Math.round(vHi)}/${Math.round(vLo)}`,
+    mm:{L:(Lm*px2mmX).toFixed(2),R:(Rm*px2mmX).toFixed(2),T:(Tm*px2mmY).toFixed(2),B:(Bm*px2mmY).toFixed(2)},
+    worst, grade:centerGrade(worst), confidence:conf,
+    overlay:{L:Lm,R:Rm,T:Tm,B:Bm,W,H}
+  };
+}
+function centerGrade(worst){ // CGC-stricter heuristic on worst axis high side
+  if(worst<=55) return 10;
+  if(worst<=58) return 9.5;
+  if(worst<=60) return 9;
+  if(worst<=63) return 8.5;
+  if(worst<=66) return 8;
+  if(worst<=70) return 7;
+  if(worst<=75) return 6;
+  return 5;
+}
+function avgColor(d,W,H,pts){ let r=0,g=0,b=0; pts.forEach(([x,y])=>{const i=(((y|0)*W+(x|0))*4); r+=d[i];g+=d[i+1];b+=d[i+2];}); const n=pts.length; return [r/n,g/n,b/n]; }
+function colDist(d,W,x,y,ref){ const i=((y*W+(x|0))*4); return Math.abs(d[i]-ref[0])+Math.abs(d[i+1]-ref[1])+Math.abs(d[i+2]-ref[2]); }
+function colDist2(d,W,x,y,ref){ const i=(((y|0)*W+x)*4); return Math.abs(d[i]-ref[0])+Math.abs(d[i+1]-ref[1])+Math.abs(d[i+2]-ref[2]); }
+function sustain(d,W,x,y,ref,dir){ let c=0; for(let k=1;k<=4;k++){ if(colDist(d,W,x+dir*k,y,ref)>40)c++; } return c>=3; }
+function sustainV(d,W,x,y,ref,dir){ let c=0; for(let k=1;k<=4;k++){ if(colDist2(d,W,x,y+dir*k,ref)>40)c++; } return c>=3; }
+
+/* ---------- corner whitening / wear ---------------------------------- */
+function measureCorner(canvas, corner){
+  const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height;
+  const d=ctx.getImageData(0,0,W,H).data;
+  // apex region = the screen corner matching `corner`; reference = strip away from apex
+  const apex = {tl:[0,0],tr:[W,0],bl:[0,H],br:[W,H]}[corner];
+  const refPt = {tl:[W*0.55,H*0.55],tr:[W*0.45,H*0.55],bl:[W*0.55,H*0.45],br:[W*0.45,H*0.45]}[corner];
+  // sample reference border colour around a small patch
+  let rr=0,rg=0,rb=0,rn=0;
+  for(let y=-6;y<=6;y++)for(let x=-6;x<=6;x++){ const px=(refPt[0]+x)|0,py=(refPt[1]+y)|0; if(px<0||py<0||px>=W||py>=H)continue; const i=(py*W+px)*4; rr+=d[i];rg+=d[i+1];rb+=d[i+2];rn++; }
+  const ref=[rr/rn,rg/rn,rb/rn];
+  const refLum=ref[0]*0.299+ref[1]*0.587+ref[2]*0.114;
+
+  // scan apex quadrant; count pixels markedly whiter than reference
+  const rx=Math.round(W*0.42), ry=Math.round(H*0.42);
+  let white=0,tot=0,sharpAcc=0,sharpN=0;
+  for(let j=0;j<ry;j++){ for(let i=0;i<rx;i++){
+    const x = corner[1]==="l"? i : W-1-i;
+    const y = corner[0]==="t"? j : H-1-j;
+    const idx=(y*W+x)*4;
+    const L=d[idx]*0.299+d[idx+1]*0.587+d[idx+2]*0.114;
+    tot++;
+    if(L-refLum>30 && d[idx]>150 && d[idx+1]>150 && d[idx+2]>150) white++;
+    if(x>0&&x<W-1&&y>0&&y<H-1){ const gx=lum(d,x+1,y,W)-lum(d,x-1,y,W), gy=lum(d,x,y+1,W)-lum(d,x,y-1,W); sharpAcc+=gx*gx+gy*gy; sharpN++; }
+  }}
+  const whitePct=white/tot*100;
+  const focus=Math.min(1,(sharpAcc/Math.max(sharpN,1))/900);
+  let wear = whitePct<1 ? "clean tip" : whitePct<3 ? "slight whitening" : whitePct<7 ? "visible whitening" : "heavy whitening";
+  return {
+    whitePct, focus,
+    grade: whitePct<1?10 : whitePct<2.5?9.5 : whitePct<4?9 : whitePct<7?8 : whitePct<11?7 : 6,
+    wear,
+    confidence: focus<0.12 ? 0.35 : 0.8,
+    blurry: focus<0.12
+  };
+}
+
+/* =====================================================================
+   LIVE LOOP
+   ===================================================================== */
+let procCanvas, procCtx, capCanvas, capCtx;
+function ensureBuffers(){
+  if(!procCanvas){ procCanvas=makeCanvas(10,10); procCtx=procCanvas.getContext("2d",{willReadFrequently:true}); }
+  if(!capCanvas){ capCanvas=makeCanvas(10,10); capCtx=capCanvas.getContext("2d",{willReadFrequently:true}); }
+}
+function setLed(el,cls){ el.className="led"+(cls?" "+cls:""); }
+
+function loop(){
+  if(!state.running) return;
+  const step=STEPS[state.stepIndex];
+  const v=els.video, vw=v.videoWidth, vh=v.videoHeight;
+  if(vw && vh && !els.fallback.classList.contains("on")){
+    const box=els.viewport.getBoundingClientRect();
+    const PW=176, PH=Math.round(PW*box.height/box.width);
+    if(procCanvas.width!==PW){ procCanvas.width=PW; procCanvas.height=PH; }
+    drawCover(procCtx,v,vw,vh,PW,PH);
+    const dat=procCtx.getImageData(0,0,PW,PH).data;
+
+    const octx=els.overlay.getContext("2d");
+    if(els.overlay.width!==box.width){ els.overlay.width=box.width; els.overlay.height=box.height; }
+    octx.clearRect(0,0,els.overlay.width,els.overlay.height);
+    const sx=box.width/PW, sy=box.height/PH;
+
+    if(step.kind==="card"){
+      const det=detectCard(dat,PW,PH);
+      drawReticle(octx,box.width,box.height);
+      let edge=det&&det.quad?"ok":"bad", lvl="bad", foc="bad", fill="bad";
+      if(det&&det.quad){
+        // draw quad
+        octx.strokeStyle="rgba(84,214,168,.9)"; octx.lineWidth=2; octx.beginPath();
+        det.quad.forEach((p,i)=>{ const X=p.x*sx,Y=p.y*sy; i?octx.lineTo(X,Y):octx.moveTo(X,Y); });
+        octx.closePath(); octx.stroke();
+        det.quad.forEach(p=>{ octx.fillStyle="#54d6a8"; octx.fillRect(p.x*sx-3,p.y*sy-3,6,6); });
+        lvl = det.level>0.9?"ok":det.level>0.78?"warn":"bad";
+        foc = det.focus>0.42?"ok":det.focus>0.25?"warn":"bad";
+        fill= det.coverage>0.30&&det.coverage<0.9?"ok":(det.coverage<=0.30?"warn":"bad");
+      }
+      setLed($("#ledEdge"),edge==="ok"?"ok":"bad");
+      setLed($("#ledLevel"),lvl); setLed($("#ledFocus"),foc); setLed($("#ledFill"),fill);
+      const good = edge==="ok"&&lvl==="ok"&&foc==="ok"&&fill==="ok";
+      handleLock(good, det&&det.quad);
+    } else {
+      // corner: fixed guide, gate on focus only (no warp)
+      drawCornerGuide(octx,box.width,box.height,step.corner);
+      const det=detectCard(dat,PW,PH); // reuse focus metric on whole frame
+      const f=focusMetric(dat,PW,PH,[{x:2,y:2},{x:PW-2,y:2},{x:PW-2,y:PH-2},{x:2,y:PH-2}]);
+      const foc=f>0.5?"ok":f>0.3?"warn":"bad";
+      setLed($("#ledEdge"),"warn"); $("#txtEdge").textContent="corner";
+      setLed($("#ledLevel"),"warn"); $("#txtLevel").textContent="hold flat";
+      setLed($("#ledFocus"),foc);
+      setLed($("#ledFill"),"warn"); $("#txtFill").textContent="fill 80%";
+      handleLock(foc==="ok", true);
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+function handleLock(good, hasTarget){
+  if(good){ state.lockFrames++; } else { state.lockFrames=Math.max(0,state.lockFrames-2); }
+  const need=8;
+  if(good){
+    els.lockbar.classList.add("lock");
+    els.lockText.textContent = state.lockFrames>=need? "Locked — capturing" : "Hold steady…";
+    els.lockCount.textContent = Math.min(state.lockFrames,need)+"/"+need;
+  } else {
+    els.lockbar.classList.remove("lock");
+    els.lockText.textContent = hasTarget? "Aligning…" : "Searching for card…";
+    els.lockCount.textContent="";
+  }
+  els.shutter.disabled = false;
+  if(state.lockFrames>=need){ state.lockFrames=0; doCapture(true); }
+}
+
+function drawReticle(ctx,w,h){
+  ctx.strokeStyle="var(--reticle)";
+  ctx.strokeStyle="rgba(180,210,255,.45)"; ctx.lineWidth=1;
+  // card frame guide (centered, card AR, ~78% height)
+  const gh=h*0.8, gw=gh/AR; const gx=(w-gw)/2, gy=(h-gh)/2;
+  ctx.setLineDash([6,8]); ctx.strokeRect(gx,gy,gw,gh); ctx.setLineDash([]);
+  // crosshair
+  const cx=w/2, cy=h/2, t=14;
+  ctx.beginPath(); ctx.moveTo(cx-t,cy);ctx.lineTo(cx+t,cy);ctx.moveTo(cx,cy-t);ctx.lineTo(cx,cy+t); ctx.stroke();
+}
+function drawCornerGuide(ctx,w,h,corner){
+  ctx.strokeStyle="rgba(232,163,61,.85)"; ctx.lineWidth=2;
+  const m=w*0.16, len=w*0.34;
+  const pts={tl:[m,m,1,1],tr:[w-m,m,-1,1],bl:[m,h-m,1,-1],br:[w-m,h-m,-1,-1]}[corner];
+  const [x,y,dx,dy]=pts;
+  ctx.beginPath();
+  ctx.moveTo(x+dx*len,y); ctx.lineTo(x,y); ctx.lineTo(x,y+dy*len);
+  ctx.stroke();
+}
+
+/* =====================================================================
+   CAPTURE
+   ===================================================================== */
+function captureFrameFull(){
+  const v=els.video, vw=v.videoWidth, vh=v.videoHeight;
+  const box=els.viewport.getBoundingClientRect();
+  const CW=Math.min(1080, vw||1080), CH=Math.round(CW*box.height/box.width);
+  capCanvas.width=CW; capCanvas.height=CH;
+  drawCover(capCtx,v,vw,vh,CW,CH);
+  return capCanvas;
+}
+
+function doCapture(auto){
+  const step=STEPS[state.stepIndex];
+  let srcCanvas;
+  if(els.fallback.classList.contains("on")) return; // fallback handled by file input
+  srcCanvas=captureFrameFull();
+
+  if(step.kind==="card"){
+    // re-detect on full-res for the warp
+    const dctx=makeCanvas(220,Math.round(220*srcCanvas.height/srcCanvas.width)); 
+    const dx=dctx.getContext("2d",{willReadFrequently:true});
+    dx.drawImage(srcCanvas,0,0,dctx.width,dctx.height);
+    const det=detectCard(dx.getContext("2d").getImageData(0,0,dctx.width,dctx.height).data,dctx.width,dctx.height);
+    if(!det||!det.quad){ flashHint("No card edge found — line it up inside the dashed frame."); return; }
+    const scale=srcCanvas.width/dctx.width;
+    const quad=det.quad.map(p=>({x:p.x*scale,y:p.y*scale}));
+    const card=warpToCard(srcCanvas,quad,520);
+    const m=measureCentering(card);
+    state.captures[step.id]={canvas:card,measurement:m};
+    renderCardReview(step,card,m);
+  } else {
+    const m=measureCorner(srcCanvas,step.corner);
+    state.captures[step.id]={canvas:srcCanvas,measurement:m};
+    if(m.blurry){ flashHint("Too soft to read — tap the corner to focus, hold steady."); }
+    renderCornerReview(step,srcCanvas,m);
+  }
+  stopLoop();
+}
+
+function flashHint(msg){ els.hint.innerHTML="<b style='color:var(--coral)'>"+msg+"</b>"; }
+
+/* ---------- fallback file capture ------------------------------------ */
+els.fileIn.addEventListener("change",e=>{
+  const f=e.target.files&&e.target.files[0]; if(!f) return;
+  const img=new Image();
+  img.onload=()=>{
+    const step=STEPS[state.stepIndex];
+    const c=makeCanvas(img.width,img.height); c.getContext("2d").drawImage(img,0,0);
+    if(step.kind==="card"){
+      const dctx=makeCanvas(220,Math.round(220*c.height/c.width));
+      dctx.getContext("2d").drawImage(c,0,0,dctx.width,dctx.height);
+      const det=detectCard(dctx.getContext("2d").getImageData(0,0,dctx.width,dctx.height).data,dctx.width,dctx.height);
+      let card;
+      if(det&&det.quad){ const s=c.width/dctx.width; card=warpToCard(c,det.quad.map(p=>({x:p.x*s,y:p.y*s})),520); }
+      else { // no edge: assume already cropped, fit to card AR
+        const out=makeCanvas(520,Math.round(520*AR)); out.getContext("2d").drawImage(c,0,0,out.width,out.height); card=out;
+      }
+      const m=measureCentering(card);
+      state.captures[step.id]={canvas:card,measurement:m};
+      renderCardReview(step,card,m);
+    } else {
+      const m=measureCorner(c,step.corner);
+      state.captures[step.id]={canvas:c,measurement:m};
+      renderCornerReview(step,c,m);
+    }
+    stopLoop();
+  };
+  img.src=URL.createObjectURL(f);
+});
+
+/* =====================================================================
+   REVIEW RENDERERS
+   ===================================================================== */
+function gradeClass(g){ return g>=9.5?"good":g>=8.5?"mid":"bad"; }
+
+function renderCardReview(step,card,m){
+  const ov=makeCanvas(card.width,card.height);
+  const octx=ov.getContext("2d"); octx.drawImage(card,0,0);
+  if(m.ok){ // draw measured border lines
+    octx.strokeStyle="rgba(232,163,61,.95)"; octx.lineWidth=2; octx.setLineDash([7,5]);
+    line(octx,m.L,0,m.L,card.height); line(octx,card.width-m.R,0,card.width-m.R,card.height);
+    line(octx,0,m.T,card.width,m.T); line(octx,0,card.height-m.B,card.width,card.height-m.B);
+    octx.setLineDash([]);
+  }
+  const body=$("#reviewBody");
+  body.innerHTML="";
+  const wrap=document.createElement("div"); wrap.className="shotwrap"; wrap.appendChild(ov); body.appendChild(wrap);
+
+  if(m.ok){
+    body.insertAdjacentHTML("beforeend",`
+      <div class="verdict">
+        <span class="grade ${gradeClass(m.grade)}" style="color:${m.grade>=9.5?'var(--mint)':m.grade>=8.5?'var(--amber)':'var(--coral)'}">${m.grade}</span>
+        <span class="label">centering · ${step.label.toLowerCase()}</span>
+        <span class="conf">conf ${(m.confidence*100|0)}%</span>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="k">Horizontal L/R</div><div class="v">${m.hRatio}</div><div class="sub">${m.mm.L} / ${m.mm.R} mm</div></div>
+        <div class="metric"><div class="k">Vertical T/B</div><div class="v">${m.vRatio}</div><div class="sub">${m.mm.T} / ${m.mm.B} mm</div></div>
+      </div>
+      <div class="note" style="margin-top:16px">Amber lines mark the inner border the tool found. If they're off the real border, re-shoot squarer or on higher-contrast background — the ratio is only as good as those lines.</div>
+    `);
+  } else {
+    body.insertAdjacentHTML("beforeend",`
+      <div class="verdict"><span class="grade bad" style="color:var(--coral)">—</span><span class="label">centering not read</span></div>
+      <div class="note" style="border-left-color:var(--coral);margin-top:16px">${m.note}</div>`);
+  }
+  body.insertAdjacentHTML("beforeend",`
+    <div class="actions">
+      <button class="secondary" id="retake">Retake</button>
+      <button class="primary" id="accept">${step.optional?'Use / next':'Next'}</button>
+    </div>`);
+  $("#retake").onclick=()=>{ delete state.captures[step.id]; enterStep(state.stepIndex); };
+  $("#accept").onclick=()=>nextStep();
+  show("s-review");
+}
+
+function renderCornerReview(step,canvas,m){
+  const body=$("#reviewBody"); body.innerHTML="";
+  const wrap=document.createElement("div"); wrap.className="shotwrap";
+  const disp=makeCanvas(canvas.width,canvas.height); disp.getContext("2d").drawImage(canvas,0,0);
+  wrap.appendChild(disp); body.appendChild(wrap);
+  body.insertAdjacentHTML("beforeend",`
+    <div class="verdict">
+      <span class="grade" style="color:${m.grade>=9.5?'var(--mint)':m.grade>=8.5?'var(--amber)':'var(--coral)'}">${m.grade}</span>
+      <span class="label">${step.label.toLowerCase()}</span>
+      <span class="conf">conf ${(m.confidence*100|0)}%</span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="k">Whitening</div><div class="v ${m.whitePct<2.5?'good':m.whitePct<7?'mid':'bad'}">${m.whitePct.toFixed(1)}%</div><div class="sub">${m.wear}</div></div>
+      <div class="metric"><div class="k">Focus gate</div><div class="v ${m.blurry?'bad':'good'}">${m.blurry?'soft':'sharp'}</div><div class="sub">${m.blurry?'re-shoot advised':'ok to read'}</div></div>
+    </div>
+    <div class="note" style="margin-top:16px">Whitening is measured against the border colour sampled mid-frame. Tip-rounding radius is a later refinement — for now treat the whitening % and the focus gate as the signal.</div>
+    <div class="actions">
+      <button class="secondary" id="retake">Retake</button>
+      <button class="primary" id="accept">Next</button>
+    </div>`);
+  $("#retake").onclick=()=>{ delete state.captures[step.id]; enterStep(state.stepIndex); };
+  $("#accept").onclick=()=>nextStep();
+  show("s-review");
+}
+function line(ctx,x1,y1,x2,y2){ ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke(); }
+
+/* =====================================================================
+   STEP FLOW
+   ===================================================================== */
+function enterStep(i){
+  state.stepIndex=i; paintRail();
+  const step=STEPS[i];
+  els.stepcode.textContent = "STEP "+(i+1)+"/"+STEPS.length+" · "+step.short;
+  // reset readout labels
+  $("#txtEdge").textContent="edge"; $("#txtLevel").textContent="level";
+  $("#txtFocus").textContent="focus"; $("#txtFill").textContent="fill";
+  els.skip.style.display = step.optional? "block":"none";
+  els.hint.innerHTML = step.kind==="card"
+    ? "<b>"+step.label+".</b> Lay it flat inside the frame. Auto-fires on lock — or tap to shoot."
+    : "<b>"+step.label+".</b> Fill ~80% with the corner tip in the bracket. Tap the corner to focus.";
+  state.lockFrames=0;
+  show("s-capture");
+  startLoop();
+}
+function nextStep(){
+  let n=state.stepIndex+1;
+  if(n>=STEPS.length){ renderResults(); return; }
+  enterStep(n);
+}
+els.skip.onclick=()=>{ const s=STEPS[state.stepIndex]; if(s.optional){ delete state.captures[s.id]; nextStep(); } };
+els.shutter.onclick=()=>{ if(els.fallback.classList.contains("on")) return; state.lockFrames=0; doCapture(false); };
+
+function startLoop(){ if(state.running) return; ensureBuffers(); state.running=true; requestAnimationFrame(loop); }
+function stopLoop(){ state.running=false; }
+
+/* =====================================================================
+   RESULTS
+   ===================================================================== */
+function renderResults(){
+  stopLoop();
+  const front=state.captures.front&&state.captures.front.measurement;
+  const back=state.captures.back&&state.captures.back.measurement;
+  const corners=["tl","tr","bl","br"].map(c=>state.captures[c]&&state.captures[c].measurement).filter(Boolean);
+
+  // pillar grades
+  const centerG = front&&front.ok ? Math.min(front.grade, back&&back.ok?back.grade:10) : null;
+  const cornerG = corners.length? Math.min(...corners.map(c=>c.grade)) : null;
+  const measured=[centerG,cornerG].filter(v=>v!=null);
+  const ceiling = measured.length? Math.min(...measured) : null;
+  const conf = avg([front&&front.confidence, ...(corners.map(c=>c.confidence))].filter(v=>v!=null));
+
+  const body=$("#resultsBody"); body.innerHTML="";
+  body.insertAdjacentHTML("beforeend",`
+    <div class="eyebrow">Predicted CGC ceiling</div>
+    <div class="verdict" style="margin-top:8px">
+      <span class="grade" style="color:${ceiling==null?'var(--faint)':ceiling>=9.5?'var(--mint)':ceiling>=8.5?'var(--amber)':'var(--coral)'}">${ceiling==null?'—':ceiling}</span>
+      <span class="label">worst measured pillar</span>
+      <span class="conf">conf ${(conf*100|0)}%</span>
+    </div>
+    <div class="note" style="margin-top:6px">A <b>ceiling</b>, not a final grade — edges and surface aren't measured yet, so the real grade can only be this or lower. Treat ${ceiling!=null&&ceiling>=9.5?'this as a genuine slab candidate':'anything under 9.5 as “think twice before paying the fee.”'}</div>
+    <div class="barwrap">
+      ${pillarRow("Centering", centerG, front?front.confidence:0, front&&front.ok)}
+      ${pillarRow("Corners", cornerG, corners.length?avg(corners.map(c=>c.confidence)):0, corners.length>0)}
+      ${pillarRow("Edges", null, 0, false)}
+      ${pillarRow("Surface", null, 0, false)}
+    </div>
+  `);
+
+  // ROI block
+  const presetSale = ceiling==null?0 : ceiling>=10?120 : ceiling>=9.5?60 : ceiling>=9?30 : 15;
+  body.insertAdjacentHTML("beforeend",`
+    <div class="roi">
+      <h3>Worth submitting?</h3>
+      <p class="s">Enter what you paid raw and what the card sells for slabbed at this grade. Fees are editable — verify live CGC pricing before you ship.</p>
+      <div class="field"><label>Raw cost (what you paid)</label><input id="rawCost" type="number" inputmode="decimal" value="0"></div>
+      <div class="field"><label>Sale price at CGC ${ceiling==null?'—':ceiling}</label><input id="salePrice" type="number" inputmode="decimal" value="${presetSale}"></div>
+      <div class="field"><label>CGC tier</label>
+        <select id="tier">
+          <option value="18">Economy · ~$18 · slow</option>
+          <option value="55" selected>Standard · ~$55 · ~10–50d</option>
+          <option value="100">Express · ~$100 · ~15d</option>
+        </select>
+      </div>
+      <div class="field"><label>Shipping + insurance (round trip)</label><input id="ship" type="number" inputmode="decimal" value="20"></div>
+      <div class="roi-out">
+        <span class="net" id="netOut">—</span>
+        <span class="tag" id="verdictTag">—</span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="secondary" id="saveCard">Save to batch</button>
+      <button class="primary" id="newCard">Next card</button>
+    </div>
+    <div class="saved" id="savedList"></div>
+  `);
+
+  const recompute=()=>{
+    const raw=+$("#rawCost").value||0, sale=+$("#salePrice").value||0, fee=+$("#tier").value||0, ship=+$("#ship").value||0;
+    const net=sale-raw-fee-ship;
+    const out=$("#netOut"), tag=$("#verdictTag");
+    out.textContent=(net>=0?"+$":"-$")+Math.abs(net).toFixed(0);
+    out.className="net "+(net>=0?"pos":"neg");
+    let v,cls;
+    if(ceiling!=null&&ceiling>=9.5&&net>15){ v="submit"; cls="pos"; }
+    else if(net>15){ v="maybe — grade is the risk"; cls="warn"; }
+    else if(sale>raw+5){ v="sell raw"; cls="warn"; }
+    else { v="keep raw"; cls="neg"; }
+    tag.textContent=v; tag.className="tag "+cls;
+  };
+  ["rawCost","salePrice","tier","ship"].forEach(id=>$("#"+id).addEventListener("input",recompute));
+  recompute();
+
+  $("#saveCard").onclick=()=>{
+    state.collection.push({grade:ceiling,conf:Math.round(conf*100),net:$("#netOut").textContent,verdict:$("#verdictTag").textContent});
+    paintSaved(); $("#saveCard").textContent="Saved ✓"; setTimeout(()=>$("#saveCard").textContent="Save to batch",1200);
+  };
+  $("#newCard").onclick=()=>{ state.captures={}; enterStep(0); };
+  paintSaved();
+  show("s-results");
+}
+function pillarRow(name,g,conf,measured){
+  const pct = g==null?0:Math.min(100,g/10*100);
+  const val = measured&&g!=null? g.toFixed(g%1?1:0) : "—";
+  const sub = measured? "" : "<span class='pending'> · soon</span>";
+  return `<div class="barrow">
+    <span class="pk">${name}</span>
+    <span class="track"><i style="width:${pct}%;background:${g==null?'var(--line)':g>=9.5?'var(--mint)':g>=8.5?'var(--amber)':'var(--coral)'}"></i></span>
+    <span class="pv ${measured?'':'pending'}">${val}${sub}</span>
+  </div>`;
+}
+function paintSaved(){
+  const el=$("#savedList"); if(!el) return;
+  if(!state.collection.length){ el.innerHTML="<h4>Batch</h4><div class='empty'>No cards saved yet.</div>"; return; }
+  el.innerHTML="<h4>Batch · "+state.collection.length+" card"+(state.collection.length>1?"s":"")+"</h4>"+
+    state.collection.map((c,i)=>`<div class="savedrow"><span class="sg">${c.grade==null?'—':c.grade}</span><span>${c.verdict}</span><span class="sv">${c.net} · conf ${c.conf}%</span></div>`).join("");
+}
+function avg(a){ return a.length? a.reduce((x,y)=>x+y,0)/a.length : 0; }
+
+/* =====================================================================
+   BOOT
+   ===================================================================== */
+buildRail();
+$("#startBtn").addEventListener("click", async ()=>{
+  await startCamera();
+  enterStep(0);
+});
+</script>
+</body>
+</html>
